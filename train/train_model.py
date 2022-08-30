@@ -126,8 +126,7 @@ for i in range(9):
         train_dataset,
         validation_data=valid_dataset,
         epochs=epochs,
-        callbacks=[checkpoint, csv_logger]
-    )
+        callbacks=[checkpoint, csv_logger])
 
     del model
     del train_dataset
