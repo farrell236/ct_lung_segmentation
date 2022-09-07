@@ -33,12 +33,11 @@ def load_itk_volume(filename):
 
     image_itk = sitk.ReadImage(root_dir+'images/'+bytes.decode(filename.numpy(), 'utf-8')+'.mhd')
     image_itk = sitk.IntensityWindowing(image_itk, -450., 50)
-    image_arr = sitk.GetArrayFromImage(image_itk).astype('uint8')
-    image_arr = tf.image.convert_image_dtype(image_arr, tf.float32)[..., None]
+    image_arr = sitk.GetArrayFromImage(image_itk).astype('uint8')[..., None]
+    image_arr = tf.image.convert_image_dtype(image_arr, tf.float32)
 
     label_itk = sitk.ReadImage(root_dir+'seg-lungs-LUNA16/'+bytes.decode(filename.numpy(), 'utf-8')+'.mhd')
-    label_arr = sitk.GetArrayFromImage(label_itk).astype('uint8')
-    label_arr = tf.one_hot(label_arr, depth=6, dtype=tf.uint8)
+    label_arr = sitk.GetArrayFromImage(label_itk).astype('uint8')[..., None]
 
     return image_arr, label_arr
 
@@ -51,12 +50,12 @@ def ensure_shape(image, label):
 
 # Code adapted from "Generalized dice loss for multi-class segmentation"
 # https://github.com/keras-team/keras/issues/9395#issuecomment-370971561
-def dice_coef(y_true, y_pred, smooth=1e-7):
+def dice_coef(y_true, y_pred, num_classes=6, smooth=1e-7):
     '''
     Dice coefficient function for LUNA16; ignores background pixel labels 0,1,2
     Pass to model as metric during compile statement
     '''
-    y_true_f = tf.keras.backend.flatten(tf.cast(y_true[..., 3:], tf.float32))
+    y_true_f = tf.keras.backend.flatten(tf.one_hot(tf.cast(y_true, tf.int32), depth=num_classes)[..., 3:])
     y_pred_f = tf.keras.backend.flatten(y_pred[..., 3:])
     intersect = tf.keras.backend.sum(y_true_f * y_pred_f, axis=-1)
     denom = tf.keras.backend.sum(y_true_f + y_pred_f, axis=-1)
@@ -68,6 +67,11 @@ def dice_coef_loss(y_true, y_pred):
     Dice loss to minimize. Pass to model as loss during compile statement
     '''
     return 1 - dice_coef(y_true, y_pred)
+
+
+def combined_loss(y_true, y_pred, alpha=0.5):
+    sBCE = tf.keras.losses.SparseCategoricalCrossentropy()
+    return (1 - alpha) * sBCE(y_true, y_pred) + alpha * dice_coef_loss(y_true, y_pred)
 
 
 for i in range(9):
@@ -96,31 +100,15 @@ for i in range(9):
     # Define DeepLabV3+ Model
     model = DeeplabV3Plus(image_size=(512, 512, 1), num_classes=6)
 
-    # Train with Binary Crossentropy Loss
-    csv_logger = tf.keras.callbacks.CSVLogger(f'logs/training_bce_{i}.log')
-    checkpoint = tf.keras.callbacks.ModelCheckpoint(
-        filepath=f'checkpoints/DeeplabV3Plus_{i}.tf',
-        monitor='val_loss', verbose=1,
-        save_best_only=True)
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
-        loss='binary_crossentropy',
-        metrics=['accuracy'])
-    model.fit(
-        train_dataset,
-        validation_data=valid_dataset,
-        epochs=epochs,
-        callbacks=[checkpoint, csv_logger])
-
-    # Fine tune with Dice Loss (optional)
-    csv_logger = tf.keras.callbacks.CSVLogger(f'logs/training_dice_{i}.log')
+    # Train with combined Binary Crossentropy and Dice Loss
+    csv_logger = tf.keras.callbacks.CSVLogger(f'logs/training_{i}.log')
     checkpoint = tf.keras.callbacks.ModelCheckpoint(
         filepath=f'checkpoints/DeeplabV3Plus_{i}.tf',
         monitor='val_dice_coef', mode='max', verbose=1,
         save_best_only=True)
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
-        loss=dice_coef_loss,
+        loss=combined_loss,
         metrics=[dice_coef])
     model.fit(
         train_dataset,
